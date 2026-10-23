@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>News Headlines Generator</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <div class="container">
+    <h1>📰 News Headlines Generator</h1>
+    <p class="sub">Paste one or more YouTube links → get a deduplicated headlines CSV.</p>
+
+    <form id="urlForm">
+      <div id="urlList"></div>
+
+      <div class="actions">
+        <button type="button" id="addBtn" class="btn secondary">➕ Add another link</button>
+        <button type="submit" id="submitBtn" class="btn primary">Create News CSV</button>
+      </div>
+    </form>
+
+    <div id="status" class="status hidden">
+      <div class="spinner"></div>
+      <p id="statusText">Working…</p>
+      <div class="progress"><div id="progressBar"></div></div>
+    </div>
+
+    <div id="result" class="result hidden">
+      <h2>✅ Done!</h2>
+      <p id="resultText"></p>
+      <a id="downloadLink" class="btn primary" href="#">⬇ Download CSV</a>
+    </div>
+
+    <div id="error" class="error hidden"></div>
+  </div>
+
+  <script>
+    const urlList = document.getElementById("urlList");
+    const addBtn = document.getElementById("addBtn");
+    const urlForm = document.getElementById("urlForm");
+    const submitBtn = document.getElementById("submitBtn");
+    const statusBox = document.getElementById("status");
+    const statusText = document.getElementById("statusText");
+    const progressBar = document.getElementById("progressBar");
+    const resultBox = document.getElementById("result");
+    const resultText = document.getElementById("resultText");
+    const downloadLink = document.getElementById("downloadLink");
+    const errorBox = document.getElementById("error");
+
+    function addInput(value = "") {
+      const row = document.createElement("div");
+      row.className = "url-row";
+      row.innerHTML = `
+        <input type="url" class="url-input" placeholder="https://www.youtube.com/watch?v=..." value="${value}" />
+        <button type="button" class="remove-btn" title="Remove">✕</button>
+      `;
+      row.querySelector(".remove-btn").onclick = () => {
+        if (urlList.children.length > 1) row.remove();
+      };
+      urlList.appendChild(row);
+    }
+
+    addInput();
+    addBtn.onclick = () => addInput();
+
+    let pollTimer = null;
+
+    urlForm.onsubmit = async (e) => {
+      e.preventDefault();
+      errorBox.classList.add("hidden");
+      resultBox.classList.add("hidden");
+
+      const urls = [...document.querySelectorAll(".url-input")]
+        .map(i => i.value.trim())
+        .filter(Boolean);
+
+      if (urls.length === 0) {
+        showError("Please enter at least one link.");
+        return;
+      }
+
+      submitBtn.disabled = true;
+      statusBox.classList.remove("hidden");
+      statusText.textContent = "Starting job…";
+      progressBar.style.width = "5%";
+
+      try {
+        const res = await fetch("/api/start", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({urls})
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to start.");
+        pollStatus(data.job_id);
+      } catch (err) {
+        showError(err.message);
+        resetUI();
+      }
+    };
+
+    function pollStatus(jobId) {
+      pollTimer = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/status/${jobId}`);
+          const job = await res.json();
+
+          if (job.videos_total) {
+            const pct = Math.min(
+              95,
+              5 + (job.videos_done / job.videos_total) * 90
+            );
+            progressBar.style.width = pct + "%";
+          }
+          statusText.textContent = job.progress || "Working…";
+
+          if (job.status === "done") {
+            clearInterval(pollTimer);
+            progressBar.style.width = "100%";
+            statusText.textContent = "Complete.";
+            setTimeout(() => {
+              statusBox.classList.add("hidden");
+              showResult(job.result, jobId);
+              resetUI();
+            }, 400);
+          } else if (job.status === "error") {
+            clearInterval(pollTimer);
+            showError(job.error || "Job failed.");
+            statusBox.classList.add("hidden");
+            resetUI();
+          }
+        } catch (err) {
+          clearInterval(pollTimer);
+          showError("Lost connection to server.");
+          resetUI();
+        }
+      }, 1200);
+    }
+
+    function showResult(result, jobId) {
+      resultBox.classList.remove("hidden");
+      let text = `Found <b>${result.unique_headlines}</b> unique headlines (from ${result.total_headlines} total).`;
+      if (result.errors && result.errors.length) {
+        text += `<br><small class="warn">⚠ ${result.errors.length} link(s) failed.</small>`;
+      }
+      resultText.innerHTML = text;
+      downloadLink.href = `/api/download/${jobId}`;
+    }
+
+    function showError(msg) {
+      errorBox.classList.remove("hidden");
+      errorBox.textContent = "❌ " + msg;
+    }
+
+    function resetUI() {
+      submitBtn.disabled = false;
+    }
+  </script>
+</body>
+</html>
